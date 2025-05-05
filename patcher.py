@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Ultra-Simple EFI Mounter and Patcher - Resolves Resource Busy issues
+Simple Sonoma VM BT Patcher
+A minimalist script to patch OpenCore config.plist for Bluetooth support in Sonoma VMs.
 """
 
 import os
@@ -10,209 +11,244 @@ import base64
 import plistlib
 import time
 
-# ANSI color codes
-BLUE = '\033[34m'
-GREEN = '\033[32m'
-RED = '\033[31m'
-YELLOW = '\033[33m'
-CYAN = '\033[36m'
-RESET = '\033[0m'
+# Basic colored output
+GREEN = "\033[32m"
+RED = "\033[31m"
+BLUE = "\033[34m"
+CYAN = "\033[36m"
+YELLOW = "\033[33m"
+RESET = "\033[0m"
 
-def log(message, color=BLUE):
-    """Simple colorful logging"""
-    timestamp = time.strftime('%H:%M:%S')
-    print(f"{color}[{timestamp}] {message}{RESET}")
+def print_step(message):
+    """Print a step in the process with timestamp"""
+    timestamp = time.strftime("%H:%M:%S")
+    print(f"{BLUE}[{timestamp}] {message}{RESET}")
+
+def print_success(message):
+    """Print a success message"""
+    print(f"{GREEN}✓ {message}{RESET}")
+
+def print_error(message):
+    """Print an error message"""
+    print(f"{RED}✗ {message}{RESET}")
+
+def print_warning(message):
+    """Print a warning message"""
+    print(f"{YELLOW}! {message}{RESET}")
 
 def print_banner():
-    """Display the script banner"""
-    banner = """
-    ╔═══════════════════════════════════════════════╗
-    ║                                               ║
-    ║   ███████╗ ██████╗ ███╗   ██╗ ██████╗ ███╗   ███╗ █████╗   ║
-    ║   ██╔════╝██╔═══██╗████╗  ██║██╔═══██╗████╗ ████║██╔══██╗  ║
-    ║   ███████╗██║   ██║██╔██╗ ██║██║   ██║██╔████╔██║███████║  ║
-    ║   ╚════██║██║   ██║██║╚██╗██║██║   ██║██║╚██╔╝██║██╔══██║  ║
-    ║   ███████║╚██████╔╝██║ ╚████║╚██████╔╝██║ ╚═╝ ██║██║  ██║  ║
-    ║   ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝  ║
-    ║                                               ║
-    ║   VM Bluetooth Enabler - Ultra Simple Mode    ║
-    ║                                               ║
-    ╚═══════════════════════════════════════════════╝
-    """
-    print(f"{CYAN}{banner}{RESET}")
+    """Display a simple banner"""
+    banner = f"""
+{CYAN}╔════════════════════════════════════════════════════╗
+║                                                    ║
+║  Sonoma VM Bluetooth Patcher                       ║
+║  Simple and Direct Version                         ║
+║                                                    ║
+╚════════════════════════════════════════════════════╝{RESET}
+"""
+    print(banner)
 
-def force_clear_mounts():
-    """Clear all EFI mounts and processes that might block mounting"""
-    # Kill any processes that might be using the disk
-    for proc in ["fsck_hfs", "diskimages-helper", "diskmanagementd"]:
-        try:
-            subprocess.run(["sudo", "killall", proc], 
-                          stderr=subprocess.DEVNULL, 
-                          stdout=subprocess.DEVNULL)
-            log(f"Killed {proc} processes", YELLOW)
-        except:
-            pass
-
-    # Force unmount any EFI volumes
-    try:
-        result = subprocess.run(["mount"], capture_output=True, text=True)
-        for line in result.stdout.split('\n'):
-            if '/dev/' in line and '/Volumes/EFI' in line:
-                device = line.split(' on ')[0]
-                log(f"Unmounting: {device}", YELLOW)
-                subprocess.run(["sudo", "umount", "-f", device], 
-                              stderr=subprocess.DEVNULL, 
-                              stdout=subprocess.DEVNULL)
-    except:
-        pass
-
-    # Clear any stale mount points
-    for directory in ["/Volumes/EFI", "/Volumes/EFI-1", "/Volumes/EFI-2"]:
-        if os.path.exists(directory):
-            try:
-                subprocess.run(["sudo", "rmdir", directory], 
-                              stderr=subprocess.DEVNULL, 
-                              stdout=subprocess.DEVNULL)
-                log(f"Removed stale mount point: {directory}", YELLOW)
-            except:
-                pass
-                
-    # Create a clean mount point
-    try:
-        os.makedirs("/Volumes/EFI", exist_ok=True)
-    except:
-        subprocess.run(["sudo", "mkdir", "-p", "/Volumes/EFI"])
-
-    # Sync disks to flush any pending I/O
-    subprocess.run(["sudo", "sync"])
-
-def get_efi_partitions():
-    """Get a list of EFI partitions in the system"""
-    partitions = []
+def run_command(cmd, silent=False):
+    """Run a command and return the output and success status"""
+    if not silent:
+        print_step(f"Running: {' '.join(cmd)}")
     
     try:
-        result = subprocess.run(['diskutil', 'list'], capture_output=True, text=True)
-        
-        for line in result.stdout.split('\n'):
-            if "EFI" in line and not "Recovery" in line:
-                parts = line.split()
-                for i, part in enumerate(parts):
-                    if part == "EFI" and i > 0 and parts[i-1].startswith("disk"):
-                        partitions.append(parts[i-1])
-    except Exception as e:
-        log(f"Error getting EFI partitions: {e}", RED)
-    
-    return partitions
-
-def mount_partition(partition):
-    """Try multiple methods to mount an EFI partition"""
-    # Ensure we have a clean slate
-    force_clear_mounts()
-    
-    log(f"Mounting {partition} - Attempt with direct system mount...", YELLOW)
-    
-    # Ultra-direct mount approach
-    try:
-        # Use direct mount command with options to prevent resource busy
-        cmd = ["sudo", "mount", "-t", "msdos", "-o", "sync,noatime", f"/dev/{partition}", "/Volumes/EFI"]
         result = subprocess.run(cmd, capture_output=True, text=True)
+        success = result.returncode == 0
+        return success, result.stdout, result.stderr
+    except Exception as e:
+        if not silent:
+            print_error(f"Command failed: {e}")
+        return False, "", str(e)
+
+def kill_blocking_processes():
+    """Kill processes that might block EFI mounting"""
+    print_step("Killing processes that might block EFI mounting")
+    
+    # List of processes known to cause "resource busy" errors
+    processes = ["fsck_hfs", "diskimages-helper", "diskmanagementd"]
+    
+    for proc in processes:
+        run_command(["sudo", "killall", proc], silent=True)
+    
+    # Force unmount any existing EFI volumes
+    success, mount_output, _ = run_command(["mount"], silent=True)
+    if success:
+        for line in mount_output.split('\n'):
+            if "/Volumes/EFI" in line and "/dev/" in line:
+                device = line.split()[0]
+                print_step(f"Force unmounting {device}")
+                run_command(["sudo", "umount", "-f", device], silent=True)
+
+def find_efi_partitions():
+    """Find all EFI partitions in the system"""
+    print_step("Finding EFI partitions")
+    
+    success, output, _ = run_command(["diskutil", "list"])
+    if not success:
+        print_error("Failed to list disks")
+        return []
+    
+    efi_partitions = []
+    current_disk = None
+    
+    for line in output.split('\n'):
+        # Track current disk
+        if line.startswith("/dev/disk"):
+            current_disk = line.split()[0]
         
-        if "busy" in result.stderr.lower():
-            log("Resource busy error encountered", RED)
-            # Wait and try again
-            time.sleep(2)
-            subprocess.run(["sudo", "sync"])
-            result = subprocess.run(cmd, capture_output=True, text=True)
+        # Look for EFI partitions
+        if "EFI" in line and current_disk:
+            parts = line.split()
+            for i, part in enumerate(parts):
+                # Format is typically: 1: EFI EFI 209.7 MB disk0s1
+                if part == "EFI" and i > 0:
+                    try:
+                        disk_id = parts[-1]  # Last part is usually the identifier
+                        if disk_id.startswith("disk"):
+                            efi_partitions.append(disk_id)
+                    except IndexError:
+                        pass
+    
+    if efi_partitions:
+        print_success(f"Found EFI partitions: {', '.join(efi_partitions)}")
+    else:
+        print_error("No EFI partitions found")
+    
+    return efi_partitions
+
+def mount_efi(partition):
+    """Mount an EFI partition using direct mount command"""
+    print_step(f"Mounting EFI partition: {partition}")
+    
+    # Ensure /Volumes/EFI exists
+    if not os.path.exists("/Volumes/EFI"):
+        run_command(["sudo", "mkdir", "-p", "/Volumes/EFI"], silent=True)
+    
+    # Force sync to flush pending disk operations
+    run_command(["sudo", "sync"], silent=True)
+    
+    # Approach 1: Use diskutil directly
+    success, output, error = run_command(["sudo", "diskutil", "mount", partition])
+    if success and "mounted" in output:
+        # Extract mount point from output
+        for line in output.split('\n'):
+            if "mounted at" in line:
+                mount_point = line.split("mounted at")[-1].strip()
+                print_success(f"Mounted at {mount_point}")
+                return mount_point
         
-        # Check if mount succeeded
-        mount_result = subprocess.run(["mount"], capture_output=True, text=True)
-        if f"/dev/{partition}" in mount_result.stdout and "/Volumes/EFI" in mount_result.stdout:
-            log(f"Successfully mounted {partition} at /Volumes/EFI", GREEN)
+        # If mount point not found in output but command succeeded
+        print_success(f"Mounted at /Volumes/EFI")
+        return "/Volumes/EFI"
+    
+    # If we got a resource busy error, try to recover
+    if "resource busy" in error.lower():
+        print_warning("Resource busy error detected, trying to recover...")
+        kill_blocking_processes()
+        time.sleep(1)  # Give system time to clean up
+        
+        # Approach 2: Try direct mount command
+        print_step("Trying direct mount command")
+        success, _, error = run_command([
+            "sudo", "mount", "-t", "msdos", 
+            f"/dev/{partition}", "/Volumes/EFI"
+        ])
+        
+        if success:
+            print_success("Mounted at /Volumes/EFI")
             return "/Volumes/EFI"
-        
-        log(f"System mount failed. Trying diskutil...", YELLOW)
-    except Exception as e:
-        log(f"Error in system mount: {e}", RED)
     
-    # Try diskutil method
-    try:
-        cmd = ["sudo", "diskutil", "mount", f"/dev/{partition}"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if "mounted" in result.stdout:
-            mount_point = result.stdout.split("mounted at")[-1].strip()
-            log(f"Successfully mounted {partition} at {mount_point}", GREEN)
-            return mount_point
-        
-        log(f"Diskutil mount failed, output: {result.stderr}", RED)
-    except Exception as e:
-        log(f"Error in diskutil mount: {e}", RED)
+    # Approach 3: Try mount with readonly option
+    print_step("Trying read-only mount")
+    success, output, _ = run_command([
+        "sudo", "diskutil", "mount", "readOnly", partition
+    ])
     
-    # Final attempt with diskutil undocumented options
-    try:
-        cmd = ["sudo", "diskutil", "mount", "readOnly", f"/dev/{partition}"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if "mounted" in result.stdout:
-            mount_point = result.stdout.split("mounted at")[-1].strip()
-            log(f"Successfully mounted {partition} read-only at {mount_point}", GREEN)
-            return mount_point
-    except Exception as e:
-        log(f"Error in diskutil read-only mount: {e}", RED)
+    if success and "mounted" in output:
+        for line in output.split('\n'):
+            if "mounted at" in line:
+                mount_point = line.split("mounted at")[-1].strip()
+                print_success(f"Mounted read-only at {mount_point}")
+                return mount_point
     
-    log(f"All mount attempts failed for {partition}", RED)
+    print_error(f"Failed to mount {partition}")
     return None
 
+def unmount_efi(partition):
+    """Unmount an EFI partition"""
+    print_step(f"Unmounting {partition}")
+    
+    # First try normal unmount
+    success, _, _ = run_command(["sudo", "diskutil", "unmount", partition])
+    if success:
+        print_success(f"Unmounted {partition}")
+        return True
+    
+    # If that fails, try force unmount
+    print_warning("Normal unmount failed, trying force unmount")
+    success, _, _ = run_command(["sudo", "diskutil", "unmount", "force", partition])
+    if success:
+        print_success(f"Force unmounted {partition}")
+        return True
+    
+    print_error(f"Failed to unmount {partition}")
+    return False
+
 def find_config_plist(mount_point):
-    """Find OpenCore config.plist"""
+    """Find OpenCore config.plist file"""
+    print_step(f"Searching for config.plist in {mount_point}")
+    
+    # Common locations
     possible_paths = [
-        os.path.join(mount_point, 'EFI', 'OC', 'config.plist'),
-        os.path.join(mount_point, 'OC', 'config.plist'),
-        os.path.join(mount_point, 'config.plist')
+        os.path.join(mount_point, "EFI", "OC", "config.plist"),
+        os.path.join(mount_point, "OC", "config.plist"),
+        os.path.join(mount_point, "config.plist")
     ]
     
     for path in possible_paths:
         if os.path.exists(path):
-            log(f"Found config.plist at {path}", GREEN)
+            print_success(f"Found config.plist at {path}")
             return path
     
-    # Try find command for a more thorough search
-    try:
-        result = subprocess.run(
-            ['sudo', 'find', mount_point, '-name', 'config.plist'],
-            capture_output=True, text=True
-        )
-        
-        if result.stdout.strip():
-            path = result.stdout.strip().split('\n')[0]
-            log(f"Found config.plist at {path}", GREEN)
-            return path
-    except:
-        pass
+    # If not found in common locations, try find command
+    print_step("Searching with find command")
+    success, output, _ = run_command([
+        "sudo", "find", mount_point, "-name", "config.plist"
+    ])
     
-    log("No config.plist found", RED)
+    if success and output.strip():
+        path = output.strip().split('\n')[0]
+        print_success(f"Found config.plist at {path}")
+        return path
+    
+    print_error("No config.plist found")
     return None
 
-def add_patches(config_path):
-    """Add Sonoma VM BT Enabler patches to config.plist"""
-    log(f"Adding patches to {config_path}", BLUE)
+def apply_patches(config_path):
+    """Apply Sonoma VM BT Enabler patches to config.plist"""
+    print_step(f"Applying patches to {config_path}")
     
-    # Make backup
+    # Create backup
     backup_path = f"{config_path}.backup"
-    try:
-        subprocess.run(['sudo', 'cp', config_path, backup_path], check=True)
-        log(f"Created backup at {backup_path}", GREEN)
-    except Exception as e:
-        log(f"Error creating backup: {e}", RED)
+    success, _, _ = run_command(["sudo", "cp", config_path, backup_path])
+    if not success:
+        print_error("Failed to create backup")
         return False
     
-    # Read the file directly with cat
+    print_success(f"Created backup at {backup_path}")
+    
+    # Read config.plist
+    success, output, _ = run_command(["sudo", "cat", config_path])
+    if not success:
+        print_error("Failed to read config.plist")
+        return False
+    
     try:
-        result = subprocess.run(['sudo', 'cat', config_path], capture_output=True, check=True)
-        plist_data = result.stdout
-        config = plistlib.loads(plist_data)
+        config = plistlib.loads(output.encode('utf-8'))
     except Exception as e:
-        log(f"Error reading config: {e}", RED)
+        print_error(f"Failed to parse config.plist: {e}")
         return False
     
     # Create patches
@@ -255,119 +291,109 @@ def add_patches(config_path):
         for patch in config['Kernel']['Patch']:
             if isinstance(patch, dict) and 'Comment' in patch:
                 if 'Sonoma VM BT Enabler' in patch['Comment']:
-                    log("Patches already exist in config.plist", GREEN)
+                    print_success("Patches already exist in config.plist")
                     return True
     
-    # Create Kernel->Patch if needed
+    # Create or update Kernel -> Patch
     if 'Kernel' not in config:
         config['Kernel'] = {}
     
     if 'Patch' not in config['Kernel']:
-        config['Kernel']['Patch'] = []
-    elif not isinstance(config['Kernel']['Patch'], list):
         config['Kernel']['Patch'] = []
     
     # Add patches
     config['Kernel']['Patch'].append(patch1)
     config['Kernel']['Patch'].append(patch2)
     
-    # Write the config directly to a temporary file
+    # Write to temporary file first
     try:
-        with open('/tmp/config.plist.new', 'wb') as f:
+        with open('/tmp/config.plist', 'wb') as f:
             plistlib.dump(config, f)
-        
-        # Copy the temporary file to the destination
-        subprocess.run(['sudo', 'cp', '/tmp/config.plist.new', config_path], check=True)
-        log("Successfully added patches to config.plist", GREEN)
-        return True
     except Exception as e:
-        log(f"Error writing config: {e}", RED)
+        print_error(f"Failed to write temporary config: {e}")
+        return False
+    
+    # Copy temporary file to destination
+    success, _, _ = run_command([
+        "sudo", "cp", "/tmp/config.plist", config_path
+    ])
+    
+    if success:
+        print_success("Successfully applied patches")
+        return True
+    else:
+        print_error("Failed to write updated config.plist")
+        # Restore backup
+        run_command(["sudo", "cp", backup_path, config_path])
         return False
 
 def main():
-    """Main function"""
+    """Main function with linear execution flow"""
     print_banner()
-    log("Starting in ultra-simple mode to resolve mounting issues", BLUE)
     
-    # Check for root
+    # Check if running as root
     if os.geteuid() != 0:
-        log("This script must be run with sudo privileges", RED)
-        sys.exit(1)
+        print_error("This script must be run with sudo privileges")
+        print(f"Please run: sudo python3 {sys.argv[0]}")
+        return
+    
+    # Clear any blocking processes
+    kill_blocking_processes()
     
     # Check for direct config path
     if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
-        log(f"Using provided config file: {sys.argv[1]}", BLUE)
-        if add_patches(sys.argv[1]):
-            log("Patches applied successfully. Please restart to apply changes", GREEN)
+        print_step(f"Using provided config path: {sys.argv[1]}")
+        if apply_patches(sys.argv[1]):
+            print_success("Patches applied successfully")
         else:
-            log("Failed to apply patches", RED)
+            print_error("Failed to apply patches")
         return
     
-    # Force clear mounts before beginning
-    force_clear_mounts()
-    
-    # Get EFI partitions
-    partitions = get_efi_partitions()
-    if not partitions:
-        log("No EFI partitions found", RED)
+    # Find EFI partitions
+    efi_partitions = find_efi_partitions()
+    if not efi_partitions:
         return
-    
-    log(f"Found {len(partitions)} EFI partitions: {', '.join(partitions)}", GREEN)
     
     # Process each partition
-    for partition in partitions:
-        log(f"Processing partition {partition}", BLUE)
+    for partition in efi_partitions:
+        print_step(f"Processing partition: {partition}")
         
-        # Mount partition
-        mount_point = mount_partition(partition)
+        # Mount EFI
+        mount_point = mount_efi(partition)
         if not mount_point:
-            log(f"Skipping {partition} - could not mount", RED)
+            print_warning(f"Skipping {partition} - could not mount")
             continue
         
         # Find config.plist
         config_path = find_config_plist(mount_point)
         if not config_path:
-            log(f"No config.plist found on {partition}", YELLOW)
-            # Unmount
-            subprocess.run(['sudo', 'umount', mount_point], 
-                          stderr=subprocess.DEVNULL, 
-                          stdout=subprocess.DEVNULL)
+            print_warning(f"No config.plist found on {partition}")
+            unmount_efi(partition)
             continue
         
         # Ask for confirmation
-        response = input(f"Apply Sonoma VM BT Enabler patch to {config_path}? [y/n]: ")
+        response = input(f"Apply Sonoma VM BT Enabler patches to {config_path}? [y/n]: ")
         if response.lower() != 'y':
-            log("Skipping this config file", YELLOW)
-            # Unmount
-            subprocess.run(['sudo', 'umount', mount_point], 
-                          stderr=subprocess.DEVNULL, 
-                          stdout=subprocess.DEVNULL)
+            print_warning(f"Skipping {config_path}")
+            unmount_efi(partition)
             continue
         
         # Apply patches
-        if add_patches(config_path):
-            log("Patches applied successfully", GREEN)
-            # Unmount
-            subprocess.run(['sudo', 'umount', mount_point], 
-                          stderr=subprocess.DEVNULL, 
-                          stdout=subprocess.DEVNULL)
-            
-            # Ask for restart
+        success = apply_patches(config_path)
+        
+        # Unmount
+        unmount_efi(partition)
+        
+        if success:
+            print_success("Patching completed successfully")
             response = input("Would you like to restart now to apply changes? [y/n]: ")
             if response.lower() == 'y':
-                log("Restarting system...", GREEN)
-                subprocess.run(['sudo', 'shutdown', '-r', 'now'])
-            
+                print_step("Restarting system...")
+                run_command(["sudo", "shutdown", "-r", "now"])
             return
-        else:
-            log("Failed to apply patches", RED)
-            # Unmount
-            subprocess.run(['sudo', 'umount', mount_point], 
-                          stderr=subprocess.DEVNULL, 
-                          stdout=subprocess.DEVNULL)
     
-    log("No suitable OpenCore config.plist found or all patching attempts failed", RED)
-    log("Try specifying the path directly: sudo python3 patcher.py /path/to/config.plist", YELLOW)
+    print_warning("No suitable OpenCore config.plist found or all patching attempts failed")
+    print(f"Try running with a direct path: sudo python3 {sys.argv[0]} /path/to/config.plist")
 
 if __name__ == "__main__":
     main()
